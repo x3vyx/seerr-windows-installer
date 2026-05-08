@@ -54,19 +54,26 @@ Source: "install-service.cmd";              DestDir: "{app}";         Flags: ign
 Source: "uninstall-service.cmd";            DestDir: "{app}";         Flags: ignoreversion
 
 [Dirs]
-Name: "{commonappdata}\Seerr";       Permissions: users-modify
-Name: "{commonappdata}\Seerr\db";    Permissions: users-modify
-Name: "{commonappdata}\Seerr\logs";  Permissions: users-modify
+Name: "{code:GetDataDir}";       Permissions: users-modify
+Name: "{code:GetDataDir}\db";    Permissions: users-modify
+Name: "{code:GetDataDir}\logs";  Permissions: users-modify
 
 [Icons]
 Name: "{group}\Open Seerr";     Filename: "http://localhost:{code:GetPort}/"
-Name: "{group}\View Logs";      Filename: "{commonappdata}\Seerr\logs"
-Name: "{group}\View Data Dir";  Filename: "{commonappdata}\Seerr"
+Name: "{group}\View Logs";      Filename: "{code:GetDataDir}\logs"
+Name: "{group}\View Data Dir";  Filename: "{code:GetDataDir}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
+
+[Registry]
+; Remember the chosen data dir so re-running the installer defaults to it
+; instead of silently orphaning the existing database.
+Root: HKLM; Subkey: "SOFTWARE\Seerr"; Flags: uninsdeletekeyifempty
+Root: HKLM; Subkey: "SOFTWARE\Seerr"; ValueType: string; ValueName: "DataDir"; \
+  ValueData: "{code:GetDataDir}"; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\install-service.cmd"; \
-  Parameters: """{app}"" ""{commonappdata}\Seerr"" ""{code:GetPort}"""; \
+  Parameters: """{app}"" ""{code:GetDataDir}"" ""{code:GetPort}"""; \
   Flags: runhidden waituntilterminated; \
   StatusMsg: "Registering and starting Seerr service..."
 
@@ -84,24 +91,46 @@ Filename: "{app}\uninstall-service.cmd"; \
 Type: filesandordirs; Name: "{app}"
 
 ; ---------------------------------------------------------------------------
-; Wizard pages: ask for HTTP port. Data dir is fixed to {commonappdata}\Seerr
-; — putting the SQLite DB anywhere under Program Files would hit UAC
-; virtualization issues.
+; Wizard pages: 1) data directory (DB + logs + settings.json), 2) HTTP port.
+; Data dir defaults to {commonappdata}\Seerr but is user-selectable so the
+; SQLite database can live on a different drive (capacity, SSD, etc.).
+; UNC/network paths are rejected — SQLite WAL is unsafe over SMB.
 ; ---------------------------------------------------------------------------
 
 [Code]
 var
+  DataDirPage: TInputDirWizardPage;
   PortPage: TInputQueryWizardPage;
 
 procedure InitializeWizard;
+var
+  ExistingDataDir: string;
 begin
-  PortPage := CreateInputQueryPage(
+  DataDirPage := CreateInputDirPage(
     wpSelectDir,
+    'Data directory',
+    'Where should Seerr store its database, logs, and settings?',
+    'The SQLite database (db.sqlite3), log files, and settings.json will ' +
+    'live under the folder you choose. This folder is preserved when you ' +
+    'uninstall Seerr.' + #13#10 + #13#10 +
+    'Tip: pick a path on a fast local drive. Network shares (UNC) are not ' +
+    'supported because SQLite WAL mode is unsafe over SMB.',
+    False,
+    ''
+  );
+  DataDirPage.Add('Data directory:');
+
+  if RegQueryStringValue(HKEY_LOCAL_MACHINE, 'SOFTWARE\Seerr', 'DataDir',
+                         ExistingDataDir) and (ExistingDataDir <> '') then
+    DataDirPage.Values[0] := ExistingDataDir
+  else
+    DataDirPage.Values[0] := ExpandConstant('{commonappdata}\Seerr');
+
+  PortPage := CreateInputQueryPage(
+    DataDirPage.ID,
     'Network configuration',
     'Choose the HTTP port Seerr will listen on',
-    'The default is 5055. Pick another port if 5055 is already in use.' + #13#10 +
-    'Data, including the SQLite database, will be stored in:' + #13#10 +
-    ExpandConstant('{commonappdata}\Seerr')
+    'The default is 5055. Pick another port if 5055 is already in use.'
   );
   PortPage.Add('HTTP port:', False);
   PortPage.Values[0] := '5055';
@@ -119,15 +148,42 @@ begin
   Result := (N >= 1) and (N <= 65535);
 end;
 
+function IsValidLocalPath(const Path: string): Boolean;
+begin
+  Result := False;
+  // Reject UNC: \\server\share
+  if (Length(Path) >= 2) and (Path[1] = '\') and (Path[2] = '\') then Exit;
+  // Require a drive letter root: X:\
+  if (Length(Path) < 3) or (Path[2] <> ':') or (Path[3] <> '\') then Exit;
+  Result := True;
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+
+  if CurPageID = DataDirPage.ID then begin
+    if not IsValidLocalPath(DataDirPage.Values[0]) then begin
+      MsgBox('Please choose a local path with a drive letter ' +
+             '(for example C:\Seerr or D:\Apps\Seerr).' + #13#10 +
+             'Network shares (UNC paths) are not supported.',
+             mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+  end;
+
   if CurPageID = PortPage.ID then begin
     if not IsValidPort(PortPage.Values[0]) then begin
       MsgBox('Please enter a valid TCP port number (1-65535).', mbError, MB_OK);
       Result := False;
     end;
   end;
+end;
+
+function GetDataDir(Param: string): string;
+begin
+  Result := DataDirPage.Values[0];
 end;
 
 function GetPort(Param: string): string;

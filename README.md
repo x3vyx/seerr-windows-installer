@@ -8,7 +8,8 @@ Docker, no PostgreSQL.
 - Registers Seerr as a Windows service (auto-start on boot, log rotation,
   restart-on-failure).
 - Uses **SQLite** as the database (no managed DB needed).
-- App data lives at `C:\ProgramData\Seerr` and survives uninstall by default.
+- Lets you pick where the database lives (defaults to `C:\ProgramData\Seerr`,
+  remembered across re-installs). Data is preserved when you uninstall.
 
 This repo contains **only the packaging**. Seerr itself is fetched from the
 upstream repo at build time.
@@ -34,11 +35,15 @@ C:\Program Files\Seerr\
 ├── install-service.cmd
 └── uninstall-service.cmd
 
-C:\ProgramData\Seerr\
+{data dir}\        # default C:\ProgramData\Seerr — selectable at install time
 ├── db\           # SQLite database
 ├── logs\         # service stdout/stderr (rotated at 10 MB)
 └── settings.json # written by Seerr on first run
 ```
+
+The chosen data directory is stored under
+`HKLM\SOFTWARE\Seerr\DataDir`, so subsequent re-runs of the installer
+default to the existing path instead of orphaning your database.
 
 The Windows service is registered as `Seerr` (`sc query Seerr`).
 
