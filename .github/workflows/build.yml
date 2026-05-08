@@ -43,6 +43,15 @@ jobs:
           git clone --depth 1 --branch "${{ env.SEERR_REF }}" `
             https://github.com/seerr-team/seerr.git seerr
 
+      - name: Force flat node_modules (no pnpm virtual store)
+        shell: pwsh
+        run: |
+          # Inno Setup's [Files] compression follows symlinks. pnpm's default
+          # symlinked .pnpm/ store breaks ISCC ("path not found"). Force a
+          # flat, npm-style layout instead.
+          Add-Content seerr\.npmrc "node-linker=hoisted"
+          Get-Content seerr\.npmrc
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
