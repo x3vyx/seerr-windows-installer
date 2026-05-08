@@ -12,6 +12,9 @@ on:
         required: false
         default: ""
 
+permissions:
+  contents: write   # needed for gh release upload
+
 jobs:
   build:
     runs-on: windows-latest
