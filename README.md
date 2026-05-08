@@ -81,8 +81,13 @@ CI does the build on `windows-latest`. To trigger a build manually:
 gh workflow run build.yml -f seerr_ref=v3.2.0
 ```
 
-To build a release-attached installer, create a GitHub Release on this repo
-with tag `seerr-vX.Y.Z` and the workflow auto-runs and uploads the `.exe`.
+To build and attach the resulting installer to an existing release in one
+shot:
+
+```bash
+gh release create v3.2.0 --prerelease --notes "..."
+gh workflow run build.yml -f seerr_ref=v3.2.0 -f release=v3.2.0
+```
 
 ### Build pipeline
 

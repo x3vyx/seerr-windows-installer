@@ -11,8 +11,6 @@ on:
         description: "Attach artifact to a GitHub Release with this tag"
         required: false
         default: ""
-  release:
-    types: [published]
 
 jobs:
   build:
@@ -162,10 +160,9 @@ jobs:
           retention-days: 30
 
       - name: Attach to GitHub Release
-        if: github.event_name == 'release' || inputs.release != ''
+        if: inputs.release != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = "${{ github.event.release.tag_name || inputs.release }}"
-          gh release upload $tag installer\Output\*.exe --clobber
+          gh release upload "${{ inputs.release }}" installer\Output\*.exe --clobber
