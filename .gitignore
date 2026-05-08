@@ -1,0 +1,10 @@
+seerr/
+dist/
+node-extract/
+node.zip
+nssm.zip
+nssm-extract/
+installer/Output/
+*.log
+.DS_Store
+Thumbs.db

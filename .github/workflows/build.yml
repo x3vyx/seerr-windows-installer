@@ -1,0 +1,162 @@
+name: Build Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      seerr_ref:
+        description: "Seerr git ref to build (tag or branch)"
+        required: true
+        default: "v3.2.0"
+      release:
+        description: "Attach artifact to a GitHub Release with this tag"
+        required: false
+        default: ""
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    env:
+      SEERR_REF: ${{ inputs.seerr_ref || github.event.release.tag_name || 'v3.2.0' }}
+      NODE_VERSION: "22.19.0"
+      PNPM_VERSION: "10.24.0"
+
+    steps:
+      - name: Checkout installer repo
+        uses: actions/checkout@v4
+
+      - name: Resolve installer version string
+        id: ver
+        shell: pwsh
+        run: |
+          $ref = "${{ env.SEERR_REF }}"
+          $version = $ref -replace '^v', ''
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Installer version: $version (from $ref)"
+
+      - name: Clone Seerr (${{ env.SEERR_REF }})
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch "${{ env.SEERR_REF }}" `
+            https://github.com/seerr-team/seerr.git seerr
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: seerr/pnpm-lock.yaml
+
+      - name: Install dependencies (full)
+        working-directory: seerr
+        run: pnpm install --frozen-lockfile
+        env:
+          # Force pnpm to actually compile/extract native prebuilds for the
+          # listed packages. Listed in upstream package.json under
+          # pnpm.onlyBuiltDependencies.
+          npm_config_target_arch: x64
+          npm_config_target_platform: win32
+
+      - name: Build Seerr (server + next)
+        working-directory: seerr
+        run: pnpm build
+
+      - name: Re-install production deps only
+        working-directory: seerr
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force node_modules
+          pnpm install --prod --frozen-lockfile
+        env:
+          npm_config_target_arch: x64
+          npm_config_target_platform: win32
+
+      - name: Stage app payload
+        shell: pwsh
+        run: |
+          $stage = "dist\app"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          $items = @(
+            "dist", ".next", "public",
+            "seerr-api.yml", "package.json", "next.config.js",
+            "node_modules"
+          )
+          foreach ($i in $items) {
+            $src = Join-Path "seerr" $i
+            if (Test-Path $src) {
+              Copy-Item -Recurse -Force $src (Join-Path $stage $i)
+            } else {
+              Write-Warning "Missing: $src"
+            }
+          }
+          # Write a marker so service knows what version it's running
+          "${{ env.SEERR_REF }}" | Out-File -FilePath (Join-Path $stage "SEERR_REF.txt") -Encoding ascii
+
+      - name: Download embedded Node runtime
+        shell: pwsh
+        run: |
+          $url = "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/node-v${{ env.NODE_VERSION }}-win-x64.zip"
+          Invoke-WebRequest $url -OutFile node.zip
+          Expand-Archive node.zip -DestinationPath node-extract
+          New-Item -ItemType Directory -Path "dist\node" -Force | Out-Null
+          Copy-Item "node-extract\node-v${{ env.NODE_VERSION }}-win-x64\node.exe" `
+                    "dist\node\node.exe"
+
+      - name: Install NSSM via Chocolatey
+        shell: pwsh
+        run: |
+          choco install nssm -y --no-progress
+          $nssm = (Get-Command nssm.exe).Source
+          New-Item -ItemType Directory -Path "dist\service" -Force | Out-Null
+          Copy-Item $nssm "dist\service\nssm.exe"
+
+      - name: Show staging tree
+        shell: pwsh
+        run: |
+          Write-Host "Top-level dist contents:"
+          Get-ChildItem dist | Format-Table Name, Mode -AutoSize
+          Write-Host "Total staged size:"
+          "{0:N0} MB" -f ((Get-ChildItem dist -Recurse | Measure-Object Length -Sum).Sum / 1MB)
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer (ISCC)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc /Qp `
+            "/DAppVersion=${{ steps.ver.outputs.version }}" `
+            "/DStagingDir=..\dist" `
+            installer\setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit $LASTEXITCODE" }
+
+      - name: Show installer output
+        shell: pwsh
+        run: Get-ChildItem installer\Output
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: seerr-windows-installer-${{ steps.ver.outputs.version }}
+          path: installer/Output/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach to GitHub Release
+        if: github.event_name == 'release' || inputs.release != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.event.release.tag_name || inputs.release }}"
+          gh release upload $tag installer\Output\*.exe --clobber
