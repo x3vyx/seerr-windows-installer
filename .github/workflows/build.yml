@@ -129,12 +129,22 @@ jobs:
           # references "..\lib\NSSM\tools\nssm.exe" via a relative path.
           # Outside the chocolatey install tree the shim cannot resolve its
           # target. Copy the real binary instead.
-          $candidate = Get-ChildItem -Path 'C:\ProgramData\chocolatey\lib\NSSM' `
-                                     -Recurse -Filter nssm.exe -ErrorAction Stop |
-                       Where-Object { $_.Directory.Name -eq 'win64' } |
-                       Select-Object -First 1
+          $libDir = 'C:\ProgramData\chocolatey\lib\NSSM'
+          $primary = Join-Path $libDir 'tools\nssm.exe'
+
+          if (Test-Path $primary) {
+            $candidate = Get-Item $primary
+          } else {
+            Write-Host "Primary path $primary not found. Scanning $libDir..."
+            Get-ChildItem $libDir -Recurse -ErrorAction SilentlyContinue |
+              Select-Object Length, FullName | Format-Table -AutoSize
+            $candidate = Get-ChildItem $libDir -Recurse -Filter nssm.exe `
+                           -ErrorAction Stop |
+                         Where-Object { $_.Length -gt 100000 } |
+                         Select-Object -First 1
+          }
           if (-not $candidate) {
-            throw "No 64-bit nssm.exe found under chocolatey\lib\NSSM"
+            throw "No nssm.exe found under $libDir"
           }
 
           New-Item -ItemType Directory -Path "dist\service" -Force | Out-Null
