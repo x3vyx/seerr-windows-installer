@@ -124,9 +124,29 @@ jobs:
         shell: pwsh
         run: |
           choco install nssm -y --no-progress
-          $nssm = (Get-Command nssm.exe).Source
+
+          # `Get-Command nssm.exe` returns a chocolatey *shim* (~5 KB) that
+          # references "..\lib\NSSM\tools\nssm.exe" via a relative path.
+          # Outside the chocolatey install tree the shim cannot resolve its
+          # target. Copy the real binary instead.
+          $candidate = Get-ChildItem -Path 'C:\ProgramData\chocolatey\lib\NSSM' `
+                                     -Recurse -Filter nssm.exe -ErrorAction Stop |
+                       Where-Object { $_.Directory.Name -eq 'win64' } |
+                       Select-Object -First 1
+          if (-not $candidate) {
+            throw "No 64-bit nssm.exe found under chocolatey\lib\NSSM"
+          }
+
           New-Item -ItemType Directory -Path "dist\service" -Force | Out-Null
-          Copy-Item $nssm "dist\service\nssm.exe"
+          Copy-Item $candidate.FullName "dist\service\nssm.exe"
+
+          # Real binary is ~330 KB; shims are ~5 KB. Fail fast if we somehow
+          # ended up with a shim again.
+          $size = (Get-Item "dist\service\nssm.exe").Length
+          if ($size -lt 100000) {
+            throw "Copied nssm.exe is $size bytes — looks like a shim, not the real binary"
+          }
+          Write-Host "Shipped nssm.exe: $size bytes (source: $($candidate.FullName))"
 
       - name: Show staging tree
         shell: pwsh

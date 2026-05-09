@@ -72,10 +72,8 @@ Root: HKLM; Subkey: "SOFTWARE\Seerr"; ValueType: string; ValueName: "DataDir"; \
   ValueData: "{code:GetDataDir}"; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\install-service.cmd"; \
-  Parameters: """{app}"" ""{code:GetDataDir}"" ""{code:GetPort}"""; \
-  Flags: runhidden waituntilterminated; \
-  StatusMsg: "Registering and starting Seerr service..."
+; install-service.cmd is run from CurStepChanged (Pascal) so we can surface
+; failures via MsgBox instead of swallowing them with `runhidden`.
 
 Filename: "http://localhost:{code:GetPort}/"; \
   Description: "Open Seerr in your browser"; \
@@ -189,4 +187,47 @@ end;
 function GetPort(Param: string): string;
 begin
   Result := PortPage.Values[0];
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  CmdExe, Args, AppDir, DataDir, Port: string;
+  ResultCode: Integer;
+begin
+  if CurStep <> ssPostInstall then Exit;
+
+  AppDir := ExpandConstant('{app}');
+  DataDir := DataDirPage.Values[0];
+  Port := PortPage.Values[0];
+  CmdExe := ExpandConstant('{cmd}');
+
+  // cmd /c "" "..install-service.cmd" "appdir" "datadir" "port" ""
+  // The outer pair of quotes is required by cmd /c when the command contains
+  // additional quoted args.
+  Args := Format('/c ""%s\install-service.cmd" "%s" "%s" "%s""',
+                 [AppDir, AppDir, DataDir, Port]);
+
+  WizardForm.StatusLabel.Caption := 'Registering and starting Seerr service...';
+  if not Exec(CmdExe, Args, AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+    MsgBox(
+      'Failed to launch install-service.cmd:' + #13#10 +
+      SysErrorMessage(ResultCode) + #13#10 + #13#10 +
+      'You can re-run service registration manually from an elevated ' +
+      'PowerShell:' + #13#10 +
+      '  & "' + AppDir + '\install-service.cmd"',
+      mbError, MB_OK);
+    Exit;
+  end;
+
+  if ResultCode <> 0 then begin
+    MsgBox(
+      Format('Service registration failed (exit code %d).' + #13#10 + #13#10 +
+             'Check the script output by re-running it from an elevated ' +
+             'PowerShell:' + #13#10 +
+             '  & "%s\install-service.cmd"' + #13#10 + #13#10 +
+             'Logs (after the service starts at least once):' + #13#10 +
+             '  %s\logs\',
+             [ResultCode, AppDir, DataDir]),
+      mbError, MB_OK);
+  end;
 end;
