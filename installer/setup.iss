@@ -191,7 +191,7 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  CmdExe, Args, AppDir, DataDir, Port: string;
+  CmdExe, Args, AppDir, DataDir, Port, CmdPath: string;
   ResultCode: Integer;
 begin
   if CurStep <> ssPostInstall then Exit;
@@ -200,12 +200,18 @@ begin
   DataDir := DataDirPage.Values[0];
   Port := PortPage.Values[0];
   CmdExe := ExpandConstant('{cmd}');
+  CmdPath := AppDir + '\install-service.cmd';
 
-  // cmd /c "" "..install-service.cmd" "appdir" "datadir" "port" ""
-  // The outer pair of quotes is required by cmd /c when the command contains
-  // additional quoted args.
-  Args := Format('/c ""%s\install-service.cmd" "%s" "%s" "%s""',
-                 [AppDir, AppDir, DataDir, Port]);
+  // cmd /c "" "..install-service.cmd" "appdir" "datadir" "port" "" -- the
+  // outer pair of quotes is required by cmd /c when the command contains
+  // additional quoted args. Built via concatenation rather than Format() so
+  // there's no array-literal continuation line that confuses ISCC's parser.
+  Args := '/c "' +
+          '"' + CmdPath + '" ' +
+          '"' + AppDir  + '" ' +
+          '"' + DataDir + '" ' +
+          '"' + Port    + '"' +
+          '"';
 
   WizardForm.StatusLabel.Caption := 'Registering and starting Seerr service...';
   if not Exec(CmdExe, Args, AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
@@ -214,20 +220,18 @@ begin
       SysErrorMessage(ResultCode) + #13#10 + #13#10 +
       'You can re-run service registration manually from an elevated ' +
       'PowerShell:' + #13#10 +
-      '  & "' + AppDir + '\install-service.cmd"',
+      '  & "' + CmdPath + '"',
       mbError, MB_OK);
     Exit;
   end;
 
   if ResultCode <> 0 then begin
     MsgBox(
-      Format('Service registration failed (exit code %d).' + #13#10 + #13#10 +
-             'Check the script output by re-running it from an elevated ' +
-             'PowerShell:' + #13#10 +
-             '  & "%s\install-service.cmd"' + #13#10 + #13#10 +
-             'Logs (after the service starts at least once):' + #13#10 +
-             '  %s\logs\',
-             [ResultCode, AppDir, DataDir]),
+      'Service registration failed (exit code ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
+      'Check the script output by re-running it from an elevated PowerShell:' + #13#10 +
+      '  & "' + CmdPath + '"' + #13#10 + #13#10 +
+      'Logs (after the service starts at least once):' + #13#10 +
+      '  ' + DataDir + '\logs\',
       mbError, MB_OK);
   end;
 end;
