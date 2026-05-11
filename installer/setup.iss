@@ -225,7 +225,21 @@ begin
     Exit;
   end;
 
-  if ResultCode <> 0 then begin
+  if ResultCode = 99 then begin
+    // Service is registered and configured for auto-start, but didn't
+    // reach RUNNING within the install-time poll window. Surface as a
+    // non-fatal notice -- it'll likely come up on its own or at next boot.
+    MsgBox(
+      'Seerr was installed and the Windows service is registered with ' +
+      'automatic startup, but it did not finish initialising within ' +
+      '30 seconds during install.' + #13#10 + #13#10 +
+      'First-run database initialisation can be slow. Wait a minute, ' +
+      'then check the service state from PowerShell:' + #13#10 +
+      '  sc query Seerr' + #13#10 + #13#10 +
+      'If it stays STOPPED, inspect:' + #13#10 +
+      '  ' + DataDir + '\logs\service-stderr.log',
+      mbInformation, MB_OK);
+  end else if ResultCode <> 0 then begin
     MsgBox(
       'Service registration failed (exit code ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
       'Check the script output by re-running it from an elevated PowerShell:' + #13#10 +

@@ -78,12 +78,42 @@ REM Idempotent: stop+remove any existing service before reinstalling
 netsh advfirewall firewall delete rule name="Seerr" >nul 2>&1
 netsh advfirewall firewall add rule name="Seerr" dir=in action=allow protocol=TCP localport=!PORT! >nul
 
-"!NSSM!" start %SERVICE% || goto :fail
+REM Kick the service via SCM (non-blocking) and poll for RUNNING state.
+REM On first run, Seerr can take 30s+ to come up (creates the SQLite DB,
+REM runs all migrations, warms the Next.js handler cache). NSSM's own
+REM `start` blocks until SCM's 30s startup deadline -- on a slow disk or
+REM with AV scanning the freshly extracted node_modules that's not enough,
+REM and the installer would falsely report failure even though the service
+REM is configured to auto-start. So: kick + poll, then degrade gracefully.
+echo Starting Seerr service (first start may take up to a minute)...
+sc start %SERVICE% >nul 2>&1
+
+set "RUNNING=0"
+for /l %%i in (1,1,30) do (
+  if !RUNNING! equ 0 (
+    timeout /t 1 /nobreak >nul
+    for /f "tokens=4" %%s in ('sc query %SERVICE% ^| findstr /c:"STATE"') do (
+      if "%%s"=="RUNNING" set "RUNNING=1"
+    )
+  )
+)
 
 echo.
-echo Seerr service installed and started on port !PORT!.
-endlocal
-exit /b 0
+if !RUNNING! equ 1 (
+  echo Seerr service is RUNNING on port !PORT!.
+  endlocal
+  exit /b 0
+) else (
+  echo Service registered and set to auto-start, but did not reach RUNNING
+  echo within 30 seconds. This can happen on first install while Seerr
+  echo initialises its database. Verify with:
+  echo   sc query Seerr
+  echo If it stays STOPPED, inspect:
+  echo   !DATA_DIR!\logs\service-stderr.log
+  endlocal
+  REM 99 = "registered but slow first start" -- not fatal
+  exit /b 99
+)
 
 :fail
 echo.
