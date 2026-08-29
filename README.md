@@ -83,15 +83,15 @@ native deps (`bcrypt`, `sharp`, `sqlite3`).
 CI does the build on `windows-latest`. To trigger a build manually:
 
 ```bash
-gh workflow run build.yml -f seerr_ref=v3.2.0
+gh workflow run build.yml -f seerr_ref=v3.4.1
 ```
 
 To build and attach the resulting installer to an existing release in one
 shot:
 
 ```bash
-gh release create v3.2.0 --prerelease --notes "..."
-gh workflow run build.yml -f seerr_ref=v3.2.0 -f release=v3.2.0
+gh release create v3.4.1 --prerelease --notes "..."
+gh workflow run build.yml -f seerr_ref=v3.4.1 -f release=v3.4.1
 ```
 
 ### Build pipeline
@@ -101,7 +101,7 @@ gh workflow run build.yml -f seerr_ref=v3.2.0 -f release=v3.2.0
 3. `pnpm build` (compiles server + Next.js).
 4. Reinstall with `pnpm install --prod --frozen-lockfile` to drop dev deps.
 5. Stage `dist/`, `.next/`, `public/`, `node_modules/`, `package.json`,
-   `next.config.js`, `seerr-api.yml` into `dist/app/`.
+   `next.config.ts`, `seerr-api.yml` into `dist/app/`.
 6. Download Node 22 win-x64 zip → `dist/node/node.exe`.
 7. `choco install nssm` → `dist/service/nssm.exe`.
 8. Run Inno Setup (`installer/setup.iss`) → `installer/Output/*.exe`.

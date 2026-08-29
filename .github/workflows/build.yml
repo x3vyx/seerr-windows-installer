@@ -6,7 +6,7 @@ on:
       seerr_ref:
         description: "Seerr git ref to build (tag or branch)"
         required: true
-        default: "v3.2.0"
+        default: "v3.4.1"
       release:
         description: "Attach artifact to a GitHub Release with this tag"
         required: false
@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 45
 
     env:
-      SEERR_REF: ${{ inputs.seerr_ref || github.event.release.tag_name || 'v3.2.0' }}
+      SEERR_REF: ${{ inputs.seerr_ref || github.event.release.tag_name || 'v3.4.1' }}
       NODE_VERSION: "22.19.0"
       PNPM_VERSION: "10.24.0"
 
@@ -94,9 +94,13 @@ jobs:
         run: |
           $stage = "dist\app"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          # Seerr <= v3.2.0 ships next.config.js; v3.3.0+ ships next.config.ts.
+          # The server calls next({ dev }) with no inline conf, so Next loads
+          # the config file from disk at runtime -- it must be shipped.
           $items = @(
             "dist", ".next", "public",
-            "seerr-api.yml", "package.json", "next.config.js",
+            "seerr-api.yml", "package.json",
+            "next.config.js", "next.config.ts",
             "node_modules"
           )
           foreach ($i in $items) {
