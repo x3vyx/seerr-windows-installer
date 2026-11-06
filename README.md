@@ -70,6 +70,9 @@ the next boot if the PC was off. When there is a newer release it:
 4. If Seerr does not come back, restores the backup, reinstalls the previous
    version and skips that release until a newer one appears.
 
+Seerr is down for the whole update, around 9 minutes on a desktop SSD. Most of
+that is unpacking the app and Seerr's first start.
+
 Log: `C:\Program Files\Seerr\updater\update.log`
 
 ```powershell
