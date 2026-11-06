@@ -56,7 +56,7 @@ The Windows service is registered as `Seerr` (`sc query Seerr`).
 
 Two independent jobs keep an install current.
 
-**GitHub Actions** checks for a new Seerr release every 6 hours. When it finds
+**GitHub Actions** checks for a new Seerr release every hour. When it finds
 one it builds the installer, then tests the real update path on a clean Windows
 runner: a forced failure must roll back, and a normal upgrade must keep the
 settings and a custom port. The release is only published if that passes.
@@ -70,8 +70,9 @@ the next boot if the PC was off. When there is a newer release it:
 4. If Seerr does not come back, restores the backup, reinstalls the previous
    version and skips that release until a newer one appears.
 
-Seerr is down for the whole update, around 9 minutes on a desktop SSD. Most of
-that is unpacking the app and Seerr's first start.
+Seerr is down for the whole update: about 14 minutes from the scheduled task,
+which Windows runs at low priority, and about 9 when run by hand. Most of that
+is unpacking the app and Seerr's first start.
 
 Log: `C:\Program Files\Seerr\updater\update.log`
 
