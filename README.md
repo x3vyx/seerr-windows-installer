@@ -1,5 +1,8 @@
 # Seerr Windows Installer (unofficial)
 
+> Fork of [kraikov/seerr-windows-installer](https://github.com/kraikov/seerr-windows-installer)
+> that follows Seerr releases on its own. See [Automatic updates](#automatic-updates).
+
 A native Windows installer for [Seerr](https://github.com/seerr-team/seerr) — no
 Docker, no PostgreSQL.
 
@@ -16,8 +19,8 @@ upstream repo at build time.
 
 ## Install
 
-Download the latest `Seerr-vX.Y.Z-windows-x64-setup.exe` from
-[Releases](https://github.com/kraikov/seerr-windows-installer/releases),
+Download the latest `Seerr-X.Y.Z-windows-x64-setup.exe` from
+[Releases](https://github.com/x3vyx/seerr-windows-installer/releases),
 run it, pick a port, click through. The service starts automatically and your
 browser opens to the setup wizard.
 
@@ -32,12 +35,14 @@ C:\Program Files\Seerr\
 ├── app\          # built Seerr (dist, .next, node_modules, public, ...)
 ├── node\         # node.exe (embedded Node 22 LTS)
 ├── service\      # nssm.exe
+├── updater\      # auto-update script, its log and download cache
 ├── install-service.cmd
 └── uninstall-service.cmd
 
 {data dir}\        # default C:\ProgramData\Seerr — selectable at install time
 ├── db\           # SQLite database
 ├── logs\         # service stdout/stderr (rotated at 10 MB)
+├── backups\      # database + settings from before each update (last 5)
 └── settings.json # written by Seerr on first run
 ```
 
@@ -46,6 +51,49 @@ The chosen data directory is stored under
 default to the existing path instead of orphaning your database.
 
 The Windows service is registered as `Seerr` (`sc query Seerr`).
+
+## Automatic updates
+
+Two independent jobs keep an install current.
+
+**GitHub Actions** checks for a new Seerr release every 6 hours. When it finds
+one it builds the installer, then tests the real update path on a clean Windows
+runner: a forced failure must roll back, and a normal upgrade must keep the
+settings and a custom port. The release is only published if that passes.
+
+**The `Seerr Auto Update` scheduled task** runs daily at 04:00 as SYSTEM, or at
+the next boot if the PC was off. When there is a newer release it:
+
+1. Downloads the installer and verifies its SHA-256.
+2. Stops the service and copies the database and settings to `backups\`.
+3. Runs the installer silently and waits for Seerr to report the new version.
+4. If Seerr does not come back, restores the backup, reinstalls the previous
+   version and skips that release until a newer one appears.
+
+Log: `C:\Program Files\Seerr\updater\update.log`
+
+```powershell
+# Is an update available? (no admin needed)
+powershell -ExecutionPolicy Bypass -File "C:\Program Files\Seerr\updater\Update-Seerr.ps1" -CheckOnly
+
+# Update now (elevated)
+Start-ScheduledTask -TaskName "Seerr Auto Update"
+
+# Retry a release that was rolled back (elevated)
+powershell -ExecutionPolicy Bypass -File "C:\Program Files\Seerr\updater\Update-Seerr.ps1" -Force
+```
+
+If an update was rolled back, Seerr's own sidebar keeps showing that an update
+is available.
+
+To turn this off, untick the option in the installer or run
+`Disable-ScheduledTask -TaskName "Seerr Auto Update"` from an elevated shell.
+
+To ship a packaging fix for a Seerr version that is already released:
+
+```bash
+gh workflow run build.yml -f seerr_ref=v3.5.1 -f revision=2   # releases v3.5.1-r2
+```
 
 ## Configuration
 
@@ -80,31 +128,28 @@ want a clean wipe.
 You can't fully build this on macOS/Linux — Windows runners are required for
 native deps (`bcrypt`, `sharp`, `sqlite3`).
 
-CI does the build on `windows-latest`. To trigger a build manually:
+CI does the build on `windows-latest`. Builds run on a schedule, or manually:
 
 ```bash
-gh workflow run build.yml -f seerr_ref=v3.4.1
-```
-
-To build and attach the resulting installer to an existing release in one
-shot:
-
-```bash
-gh release create v3.4.1 --prerelease --notes "..."
-gh workflow run build.yml -f seerr_ref=v3.4.1 -f release=v3.4.1
+gh workflow run build.yml                                   # latest Seerr release
+gh workflow run build.yml -f seerr_ref=v3.5.1 -f publish=false   # build and test only
 ```
 
 ### Build pipeline
 
 1. Clone Seerr at the requested tag.
-2. `pnpm install --frozen-lockfile` (full deps).
-3. `pnpm build` (compiles server + Next.js).
-4. Reinstall with `pnpm install --prod --frozen-lockfile` to drop dev deps.
-5. Stage `dist/`, `.next/`, `public/`, `node_modules/`, `package.json`,
+2. Read the Node version from upstream's `Dockerfile` and the pnpm version from
+   its `package.json`, so upstream runtime bumps carry over automatically.
+3. `pnpm install --frozen-lockfile` (full deps).
+4. `pnpm build` (compiles server + Next.js).
+5. Reinstall with `pnpm install --prod --frozen-lockfile` to drop dev deps.
+6. Stage `dist/`, `.next/`, `public/`, `node_modules/`, `package.json`,
    `next.config.ts`, `seerr-api.yml` into `dist/app/`.
-6. Download Node 22 win-x64 zip → `dist/node/node.exe`.
-7. `choco install nssm` → `dist/service/nssm.exe`.
-8. Run Inno Setup (`installer/setup.iss`) → `installer/Output/*.exe`.
+7. Download the Node win-x64 zip → `dist/node/node.exe`.
+8. `choco install nssm` → `dist/service/nssm.exe`.
+9. Run Inno Setup (`installer/setup.iss`) → `installer/Output/*.exe`.
+10. Run `tests/Test-Upgrade.ps1` on a clean runner.
+11. Publish the GitHub Release.
 
 ## Roadmap / known limitations
 
@@ -114,8 +159,11 @@ gh workflow run build.yml -f seerr_ref=v3.4.1 -f release=v3.4.1
   coverage is patchy. Add when stable.
 - **No upgrade path from existing Postgres install.** SQLite-only. Migration
   from a Docker/Postgres deployment is a future feature.
-- **Update notifier inside Seerr is enabled.** Rerun the installer with a newer
-  version to upgrade.
+- **Upgrades reset custom service settings.** The port is kept, but any other
+  variable added with `nssm edit` has to be set again.
+- **Auto-update trusts this repo's releases.** The task runs installers from it
+  as SYSTEM and the checksum only proves the download is intact, so protect the
+  GitHub account that owns the repo with 2FA.
 - **Service runs as `LocalSystem`** (NSSM default). Tightening to a dedicated
   low-privilege account is a follow-up.
 

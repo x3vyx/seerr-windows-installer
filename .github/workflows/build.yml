@@ -1,48 +1,131 @@
 name: Build Installer
 
 on:
+  schedule:
+    - cron: "17 */6 * * *"
   workflow_dispatch:
     inputs:
       seerr_ref:
-        description: "Seerr git ref to build (tag or branch)"
-        required: true
-        default: "v3.4.1"
-      release:
-        description: "Attach artifact to a GitHub Release with this tag"
+        description: "Seerr tag to build (empty = latest upstream release)"
         required: false
         default: ""
+      revision:
+        description: "Packaging revision, for a rebuild of a Seerr version already released (2 gives v3.5.1-r2)"
+        required: false
+        default: ""
+      publish:
+        description: "Publish a GitHub Release after the tests pass"
+        type: boolean
+        required: false
+        default: true
 
 permissions:
-  contents: write   # needed for gh release upload
+  contents: write   # gh release create
+  actions: write    # re-enable this workflow, see the keepalive step
+
+concurrency:
+  group: build-installer
+  cancel-in-progress: false
+
+env:
+  # Released by the original project, predates this fork's first release. Used
+  # as the upgrade baseline only until this repo has a release of its own.
+  FALLBACK_BASELINE_REPO: kraikov/seerr-windows-installer
+  FALLBACK_BASELINE_TAG: v3.4.1
 
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      seerr_ref: ${{ steps.plan.outputs.seerr_ref }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      publish: ${{ steps.plan.outputs.publish }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # GitHub disables scheduled workflows after 60 days without repo activity,
+      # and upstream can go quiet for that long. Enabling the workflow resets it.
+      - name: Keep the schedule alive
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/enable"
+
+      - name: Decide what to build
+        id: plan
+        env:
+          INPUT_REF: ${{ inputs.seerr_ref }}
+          INPUT_REVISION: ${{ inputs.revision }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          ref="$INPUT_REF"
+          if [ -z "$ref" ]; then
+            ref=$(gh api repos/seerr-team/seerr/releases/latest --jq .tag_name)
+          fi
+
+          version="${ref#v}"
+          tag="$ref"
+          if [ -n "$INPUT_REVISION" ]; then
+            version="$version-r$INPUT_REVISION"
+            tag="$tag-r$INPUT_REVISION"
+          fi
+
+          build=true
+          if [ "$EVENT" = "schedule" ]; then
+            released=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq "[.[].tag_name | select(. == \"$ref\" or startswith(\"$ref-r\"))] | length")
+            if [ "$released" != "0" ]; then
+              build=false
+            fi
+          fi
+
+          publish=true
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            publish="$INPUT_PUBLISH"
+          fi
+
+          echo "Seerr $ref -> tag $tag (build=$build, publish=$publish)"
+          {
+            echo "build=$build"
+            echo "seerr_ref=$ref"
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
     runs-on: windows-latest
     timeout-minutes: 45
 
     env:
-      SEERR_REF: ${{ inputs.seerr_ref || github.event.release.tag_name || 'v3.4.1' }}
-      NODE_VERSION: "22.19.0"
-      PNPM_VERSION: "10.24.0"
+      SEERR_REF: ${{ needs.resolve.outputs.seerr_ref }}
+      VERSION: ${{ needs.resolve.outputs.version }}
 
     steps:
       - name: Checkout installer repo
-        uses: actions/checkout@v4
-
-      - name: Resolve installer version string
-        id: ver
-        shell: pwsh
-        run: |
-          $ref = "${{ env.SEERR_REF }}"
-          $version = $ref -replace '^v', ''
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Installer version: $version (from $ref)"
+        uses: actions/checkout@v7
 
       - name: Clone Seerr (${{ env.SEERR_REF }})
         shell: pwsh
         run: |
-          git clone --depth 1 --branch "${{ env.SEERR_REF }}" `
+          git clone --depth 1 --branch "$env:SEERR_REF" `
             https://github.com/seerr-team/seerr.git seerr
+
+      # Upstream pins Node in its Dockerfile and ships security fixes by bumping
+      # it, so a hardcoded version here would silently miss them.
+      - name: Use the Node version upstream ships
+        shell: pwsh
+        run: |
+          $match = Select-String -Path seerr\Dockerfile -Pattern '^FROM node:(\d+\.\d+\.\d+)' |
+            Select-Object -First 1
+          if (-not $match) { throw 'Could not find the Node version in the upstream Dockerfile' }
+          $node = $match.Matches[0].Groups[1].Value
+          Write-Host "Node $node"
+          "NODE_VERSION=$node" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Force flat node_modules (no pnpm virtual store)
         shell: pwsh
@@ -54,12 +137,12 @@ jobs:
           Get-Content seerr\.npmrc
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
-          version: ${{ env.PNPM_VERSION }}
+          package_json_file: seerr/package.json
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -74,10 +157,14 @@ jobs:
           # pnpm.onlyBuiltDependencies.
           npm_config_target_arch: x64
           npm_config_target_platform: win32
+          CYPRESS_INSTALL_BINARY: "0"
 
       - name: Build Seerr (server + next)
         working-directory: seerr
         run: pnpm build
+        env:
+          # Compiled into the web UI, which compares it to the server's value.
+          COMMIT_TAG: ${{ env.SEERR_REF }}
 
       - name: Re-install production deps only
         working-directory: seerr
@@ -112,16 +199,20 @@ jobs:
             }
           }
           # Write a marker so service knows what version it's running
-          "${{ env.SEERR_REF }}" | Out-File -FilePath (Join-Path $stage "SEERR_REF.txt") -Encoding ascii
+          "$env:SEERR_REF" | Out-File -FilePath (Join-Path $stage "SEERR_REF.txt") -Encoding ascii
+          # Without this Seerr reports commitTag "local" and never checks for
+          # updates. Upstream's Dockerfile writes the same file.
+          "{`"commitTag`": `"$env:SEERR_REF`"}" |
+            Out-File -FilePath (Join-Path $stage "committag.json") -Encoding ascii
 
       - name: Download embedded Node runtime
         shell: pwsh
         run: |
-          $url = "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/node-v${{ env.NODE_VERSION }}-win-x64.zip"
+          $url = "https://nodejs.org/dist/v$env:NODE_VERSION/node-v$env:NODE_VERSION-win-x64.zip"
           Invoke-WebRequest $url -OutFile node.zip
           Expand-Archive node.zip -DestinationPath node-extract
           New-Item -ItemType Directory -Path "dist\node" -Force | Out-Null
-          Copy-Item "node-extract\node-v${{ env.NODE_VERSION }}-win-x64\node.exe" `
+          Copy-Item "node-extract\node-v$env:NODE_VERSION-win-x64\node.exe" `
                     "dist\node\node.exe"
 
       - name: Install NSSM via Chocolatey
@@ -177,29 +268,102 @@ jobs:
       - name: Build installer (ISCC)
         shell: pwsh
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          & $iscc /Qp `
-            "/DAppVersion=${{ steps.ver.outputs.version }}" `
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe", "$env:ProgramFiles\Inno Setup *\ISCC.exe" `
+                    -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) { throw 'ISCC.exe not found' }
+          Write-Host "Using $($iscc.FullName)"
+          & $iscc.FullName /Qp `
+            "/DAppVersion=$env:VERSION" `
             "/DStagingDir=..\dist" `
             installer\setup.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit $LASTEXITCODE" }
 
-      - name: Show installer output
-        shell: pwsh
-        run: Get-ChildItem installer\Output
-
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: seerr-windows-installer-${{ steps.ver.outputs.version }}
+          name: installer
           path: installer/Output/*.exe
           if-no-files-found: error
           retention-days: 30
 
-      - name: Attach to GitHub Release
-        if: inputs.release != ''
+  # A separate clean runner, so the installer has to work on its own. Nothing
+  # reaches the PCs that auto-update unless the real update path passes here.
+  test:
+    needs: [resolve, build]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+
+    steps:
+      - name: Checkout installer repo
+        uses: actions/checkout@v7
+
+      - name: Download installer
+        uses: actions/download-artifact@v8
+        with:
+          name: installer
+          path: new
+
+      - name: Download upgrade baseline
+        id: baseline
+        shell: pwsh
+        run: |
+          # The newest release this repo has, as that is what PCs are running.
+          $tag = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=1" --jq '.[0].tag_name'
+          $repo = $env:GITHUB_REPOSITORY
+          if (-not $tag) {
+            $tag = $env:FALLBACK_BASELINE_TAG
+            $repo = $env:FALLBACK_BASELINE_REPO
+          }
+          Write-Host "Baseline: $repo $tag"
+          gh release download $tag --repo $repo --pattern '*-windows-x64-setup.exe' --dir baseline
+          if ($LASTEXITCODE -ne 0) { throw "Could not download baseline $tag" }
+          "version=$($tag -replace '^v', '')" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upgrade, rollback and data retention tests
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASELINE_VERSION: ${{ steps.baseline.outputs.version }}
         run: |
-          gh release upload "${{ inputs.release }}" installer\Output\*.exe --clobber
+          $new = (Get-ChildItem new\*.exe | Select-Object -First 1).FullName
+          $baseline = (Get-ChildItem baseline\*.exe | Select-Object -First 1).FullName
+          & tests\Test-Upgrade.ps1 -NewInstaller $new -NewVersion $env:VERSION `
+            -BaselineInstaller $baseline -BaselineVersion $env:BASELINE_VERSION
+
+      - name: Show service logs
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-Content 'C:\Program Files\Seerr\updater\update.log' -ErrorAction SilentlyContinue
+          Get-Content 'C:\Program Files\Seerr\updater\last-install.log' -Tail 60 -ErrorAction SilentlyContinue
+          Get-Content 'C:\ProgramData\Seerr\logs\service-stderr.log' -Tail 60 -ErrorAction SilentlyContinue
+          Get-Content 'C:\ProgramData\Seerr\logs\service-stdout.log' -Tail 60 -ErrorAction SilentlyContinue
+
+  publish:
+    needs: [resolve, test]
+    if: needs.resolve.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      SEERR_REF: ${{ needs.resolve.outputs.seerr_ref }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+
+    steps:
+      - name: Download installer
+        uses: actions/download-artifact@v8
+        with:
+          name: installer
+          path: new
+
+      # The asset goes up with the release in one step, so the updater never
+      # sees a release without an installer.
+      - name: Publish release
+        run: |
+          gh release create "$TAG" new/*.exe \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Seerr $VERSION — Windows installer" \
+            --notes "Packages [Seerr $SEERR_REF](https://github.com/seerr-team/seerr/releases/tag/$SEERR_REF)."

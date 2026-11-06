@@ -4,7 +4,7 @@
 
 #define MyAppName       "Seerr"
 #define MyAppPublisher  "Community Build (unofficial)"
-#define MyAppURL        "https://github.com/kraikov/seerr-windows-installer"
+#define MyAppURL        "https://github.com/x3vyx/seerr-windows-installer"
 #define MyUpstreamURL   "https://github.com/seerr-team/seerr"
 
 #ifndef AppVersion
@@ -46,12 +46,20 @@ RestartApplications=no
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Tasks]
+Name: "autoupdate"; Description: "Keep Seerr updated automatically (checks daily at 04:00)"
+
+[InstallDelete]
+; Upgrades must not leave the previous build's chunks and modules behind.
+Type: filesandordirs; Name: "{app}\app"
+
 [Files]
 Source: "{#StagingDir}\app\*";              DestDir: "{app}\app";     Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagingDir}\node\*";             DestDir: "{app}\node";    Flags: ignoreversion
 Source: "{#StagingDir}\service\*";          DestDir: "{app}\service"; Flags: ignoreversion
 Source: "install-service.cmd";              DestDir: "{app}";         Flags: ignoreversion
 Source: "uninstall-service.cmd";            DestDir: "{app}";         Flags: ignoreversion
+Source: "updater\*.ps1";                    DestDir: "{app}\updater"; Flags: ignoreversion
 
 [Dirs]
 Name: "{code:GetDataDir}";       Permissions: users-modify
@@ -74,6 +82,10 @@ Root: HKLM; Subkey: "SOFTWARE\Seerr"; ValueType: string; ValueName: "DataDir"; \
 [Run]
 ; install-service.cmd is run from CurStepChanged (Pascal) so we can surface
 ; failures via MsgBox instead of swallowing them with `runhidden`.
+
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\updater\Register-UpdateTask.ps1"""; \
+  Flags: runhidden waituntilterminated; Tasks: autoupdate
 
 Filename: "http://localhost:{code:GetPort}/"; \
   Description: "Open Seerr in your browser"; \
@@ -99,6 +111,31 @@ Type: filesandordirs; Name: "{app}"
 var
   DataDirPage: TInputDirWizardPage;
   PortPage: TInputQueryWizardPage;
+
+// The port the service is already configured with, so upgrades (silent ones
+// included) keep it. NSSM stores the environment as a REG_MULTI_SZ.
+function GetInstalledPort: string;
+var
+  Environment, Digits: string;
+  Start, I: Integer;
+begin
+  Result := '5055';
+  if not RegQueryMultiString(HKEY_LOCAL_MACHINE,
+      'SYSTEM\CurrentControlSet\Services\Seerr\Parameters',
+      'AppEnvironmentExtra', Environment) then Exit;
+
+  Environment := #0 + Environment;
+  Start := Pos(#0 + 'PORT=', Environment);
+  if Start = 0 then Exit;
+
+  Digits := '';
+  I := Start + Length(#0 + 'PORT=');
+  while (I <= Length(Environment)) and (Environment[I] >= '0') and (Environment[I] <= '9') do begin
+    Digits := Digits + Environment[I];
+    I := I + 1;
+  end;
+  if Digits <> '' then Result := Digits;
+end;
 
 procedure InitializeWizard;
 var
@@ -131,7 +168,7 @@ begin
     'The default is 5055. Pick another port if 5055 is already in use.'
   );
   PortPage.Add('HTTP port:', False);
-  PortPage.Values[0] := '5055';
+  PortPage.Values[0] := GetInstalledPort();
 end;
 
 function IsValidPort(const S: string): Boolean;
@@ -189,6 +226,22 @@ begin
   Result := PortPage.Values[0];
 end;
 
+// Stop the service before any file is touched. Otherwise node.exe holds its
+// files open, and NSSM would restart it 5 seconds after Setup closed it.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Nssm: string;
+  ResultCode: Integer;
+begin
+  Result := '';
+  Nssm := ExpandConstant('{app}\service\nssm.exe');
+  if FileExists(Nssm) then
+    Exec(Nssm, 'stop Seerr', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+// SuppressibleMsgBox below, never MsgBox: /SUPPRESSMSGBOXES does not silence
+// MsgBox, and the auto-updater runs Setup in session 0, where nobody could
+// ever dismiss it.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   CmdExe, Args, AppDir, DataDir, Port, CmdPath: string;
@@ -215,13 +268,13 @@ begin
 
   WizardForm.StatusLabel.Caption := 'Registering and starting Seerr service...';
   if not Exec(CmdExe, Args, AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-    MsgBox(
+    SuppressibleMsgBox(
       'Failed to launch install-service.cmd:' + #13#10 +
       SysErrorMessage(ResultCode) + #13#10 + #13#10 +
       'You can re-run service registration manually from an elevated ' +
       'PowerShell:' + #13#10 +
       '  & "' + CmdPath + '"',
-      mbError, MB_OK);
+      mbError, MB_OK, IDOK);
     Exit;
   end;
 
@@ -229,7 +282,7 @@ begin
     // Service is registered and configured for auto-start, but didn't
     // reach RUNNING within the install-time poll window. Surface as a
     // non-fatal notice -- it'll likely come up on its own or at next boot.
-    MsgBox(
+    SuppressibleMsgBox(
       'Seerr was installed and the Windows service is registered with ' +
       'automatic startup, but it did not finish initialising within ' +
       '30 seconds during install.' + #13#10 + #13#10 +
@@ -238,14 +291,14 @@ begin
       '  sc query Seerr' + #13#10 + #13#10 +
       'If it stays STOPPED, inspect:' + #13#10 +
       '  ' + DataDir + '\logs\service-stderr.log',
-      mbInformation, MB_OK);
+      mbInformation, MB_OK, IDOK);
   end else if ResultCode <> 0 then begin
-    MsgBox(
+    SuppressibleMsgBox(
       'Service registration failed (exit code ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
       'Check the script output by re-running it from an elevated PowerShell:' + #13#10 +
       '  & "' + CmdPath + '"' + #13#10 + #13#10 +
       'Logs (after the service starts at least once):' + #13#10 +
       '  ' + DataDir + '\logs\',
-      mbError, MB_OK);
+      mbError, MB_OK, IDOK);
   end;
 end;

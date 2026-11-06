@@ -12,5 +12,7 @@ if exist "%NSSM%" (
 
 netsh advfirewall firewall delete rule name="Seerr" >nul 2>&1
 
+schtasks /Delete /TN "Seerr Auto Update" /F >nul 2>&1
+
 endlocal
 exit /b 0
