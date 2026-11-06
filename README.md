@@ -54,12 +54,25 @@ The Windows service is registered as `Seerr` (`sc query Seerr`).
 
 ## Automatic updates
 
-Two independent jobs keep an install current.
+Three jobs keep an install current.
 
-**GitHub Actions** checks for a new Seerr release every hour. When it finds
-one it builds the installer, then tests the real update path on a clean Windows
-runner: a forced failure must roll back, and a normal upgrade must keep the
-settings and a custom port. The release is only published if that passes.
+**The `Seerr Build Trigger` scheduled task** runs hourly on the PC as the
+signed-in user and starts the build when Seerr has a new release. It exists
+because GitHub's cron never fired on this fork, even with the workflow active.
+The cron stays in the workflow as a backup. The task needs the PC on, a logged
+in user and a working `gh` login, and runs `tools/Trigger-Build.ps1` from this
+clone, so moving the clone means registering it again:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\Trigger-Build.ps1 -Register
+```
+
+Its log is at `%LOCALAPPDATA%\SeerrBuildTrigger\trigger.log`.
+
+**GitHub Actions** builds the installer, then tests the real update path on a
+clean Windows runner: a forced failure must roll back, and a normal upgrade must
+keep the settings and a custom port. The release is only published if that
+passes.
 
 **The `Seerr Auto Update` scheduled task** runs daily at 04:00 as SYSTEM, or at
 the next boot if the PC was off. When there is a newer release it:
