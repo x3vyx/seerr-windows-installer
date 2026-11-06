@@ -120,7 +120,7 @@ var
   Start, I: Integer;
 begin
   Result := '5055';
-  if not RegQueryMultiString(HKEY_LOCAL_MACHINE,
+  if not RegQueryMultiStringValue(HKEY_LOCAL_MACHINE,
       'SYSTEM\CurrentControlSet\Services\Seerr\Parameters',
       'AppEnvironmentExtra', Environment) then Exit;
 
