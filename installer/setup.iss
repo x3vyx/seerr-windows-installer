@@ -54,7 +54,10 @@ Name: "autoupdate"; Description: "Keep Seerr updated automatically (checks daily
 Type: filesandordirs; Name: "{app}\app"
 
 [Files]
-Source: "{#StagingDir}\app\*";              DestDir: "{app}\app";     Flags: ignoreversion recursesubdirs createallsubdirs
+; One archive instead of the app folder: node_modules has hundreds of thousands
+; of files and Setup took 17 minutes to copy them one by one, with Seerr down.
+; Unpacked with tar in CurStepChanged.
+Source: "{#StagingDir}\app.tar";            DestDir: "{tmp}";         Flags: ignoreversion
 Source: "{#StagingDir}\node\*";             DestDir: "{app}\node";    Flags: ignoreversion
 Source: "{#StagingDir}\service\*";          DestDir: "{app}\service"; Flags: ignoreversion
 Source: "install-service.cmd";              DestDir: "{app}";         Flags: ignoreversion
@@ -250,6 +253,19 @@ begin
   if CurStep <> ssPostInstall then Exit;
 
   AppDir := ExpandConstant('{app}');
+
+  WizardForm.StatusLabel.Caption := 'Unpacking Seerr...';
+  ForceDirectories(AppDir + '\app');
+  if not Exec(ExpandConstant('{sys}\tar.exe'),
+              '-xf "' + ExpandConstant('{tmp}\app.tar') + '" -C "' + AppDir + '\app"',
+              '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+     or (ResultCode <> 0) then begin
+    SuppressibleMsgBox(
+      'Failed to unpack Seerr (tar exit code ' + IntToStr(ResultCode) + ').',
+      mbError, MB_OK, IDOK);
+    Exit;
+  end;
+
   DataDir := DataDirPage.Values[0];
   Port := PortPage.Values[0];
   CmdExe := ExpandConstant('{cmd}');

@@ -51,7 +51,7 @@ function Invoke-Updater([string[]]$Arguments) {
 Write-Host "=== Baseline install ($BaselineVersion)"
 $process = Start-Process $BaselineInstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
 $null = $process.Handle
-Assert-True ($process.WaitForExit(600000) -and $process.ExitCode -eq 0) 'baseline installer finished'
+Assert-True ($process.WaitForExit(2400000) -and $process.ExitCode -eq 0) 'baseline installer finished'
 Wait-Version $baselineAppVersion 5055 | Out-Null
 $clientId = Get-ClientId
 Assert-True ([bool]$clientId) 'settings.json was created'

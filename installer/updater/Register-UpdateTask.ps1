@@ -12,10 +12,12 @@ $action = New-ScheduledTaskAction -Execute $powershell `
 
 $trigger = New-ScheduledTaskTrigger -Daily -At '04:00'
 
-# StartWhenAvailable catches up after a night with the PC off.
+# StartWhenAvailable catches up after a night with the PC off. The time limit
+# must stay above the updater's worst case, an update plus a rollback, because
+# the task being killed halfway would leave Seerr stopped.
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries -RunOnlyIfNetworkAvailable `
-  -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew
+  -ExecutionTimeLimit (New-TimeSpan -Hours 3) -MultipleInstances IgnoreNew
 
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 

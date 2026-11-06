@@ -36,7 +36,7 @@ param(
   [string]$TargetVersion,
   [string]$RollbackInstallerPath,
   [int]$HealthTimeoutSec = 300,
-  [int]$InstallerTimeoutSec = 900,
+  [int]$InstallerTimeoutSec = 2400,
   [int]$KeepBackups = 5
 )
 
@@ -317,7 +317,8 @@ try {
   Write-Log "Rolling back to $($current.Text)"
   Stop-Seerr
   # Older installers do not clear this folder, and mixing two builds breaks it.
-  Remove-Item -Path (Join-Path $AppDir 'app') -Recurse -Force -ErrorAction SilentlyContinue
+  # rd, because Remove-Item takes many minutes on a folder this size.
+  & cmd.exe /c rd /s /q (Join-Path $AppDir 'app')
   Restore-Seerr $backup
   Invoke-Installer $rollbackInstaller
   Save-State $target.Text

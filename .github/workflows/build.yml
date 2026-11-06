@@ -205,6 +205,16 @@ jobs:
           "{`"commitTag`": `"$env:SEERR_REF`"}" |
             Out-File -FilePath (Join-Path $stage "committag.json") -Encoding ascii
 
+          # Source maps are about 40% of the files and unused at runtime. The
+          # file count is what makes installing, and so each update, slow.
+          Get-ChildItem "$stage\node_modules" -Recurse -File -Filter *.map | Remove-Item -Force
+
+          $files = (Get-ChildItem $stage -Recurse -File).Count
+          Write-Host "Packing $files files"
+          & "$env:SystemRoot\System32\tar.exe" -cf dist\app.tar -C $stage .
+          if ($LASTEXITCODE -ne 0) { throw "tar failed with exit $LASTEXITCODE" }
+          Remove-Item -Recurse -Force $stage
+
       - name: Download embedded Node runtime
         shell: pwsh
         run: |
@@ -291,7 +301,9 @@ jobs:
   test:
     needs: [resolve, build]
     runs-on: windows-latest
-    timeout-minutes: 30
+    # Installers older than the tar packaging take 15+ minutes each, and until
+    # this repo has a release of its own the baseline is one of those.
+    timeout-minutes: 150
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.resolve.outputs.version }}
